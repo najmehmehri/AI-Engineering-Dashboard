@@ -5,113 +5,111 @@ using Microsoft.SemanticKernel.ChatCompletion;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ۱. فعال‌سازی CORS برای ارتباط با فرانت‌اند
 builder.Services.AddCors(options =>
 {
-    options.AddDefaultPolicy(policy =>
+    options.AddPolicy("FrontendPolicy", policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.WithOrigins("http://localhost:3000", "http://localhost:5174") // پورت‌های متداول React/Vite
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
 });
 
-// ۲. راه‌اندازی موتور هوش مصنوعی Semantic Kernel متصل به Ollama
 builder.Services.AddSingleton(sp =>
 {
     var kernelBuilder = Kernel.CreateBuilder();
     kernelBuilder.AddOpenAIChatCompletion(
-        modelId: "llama3.2:3b",
-        apiKey: "*******",
+        modelId: "llama3.2:3b", // پیشنهاد جایگزین: qwen2.5:7b یا llama3.1:8b برای دقت فنی بالاتر
+        apiKey: "ollama-local",
         endpoint: new Uri("http://localhost:11434/v1")
     );
     return kernelBuilder.Build();
 });
 
 var app = builder.Build();
-app.UseCors();
+app.UseCors("FrontendPolicy");
 
-// ۳. تعریف هویت دستیاران تخصصی مهندسی صنایع سنگین
 var assistantPrompts = new Dictionary<string, string>
 {
-    {
-        "petroleum",
-        """
+    ["petroleum"] = """
         شما یک مهندس ارشد و مشاور بین‌المللی مهندسی نفت، گاز و پتروشیمی هستید.
         - تخصص شما: مهندسی مخازن، شبیه‌سازی جریان چندفازی، مکانیک سیالات حفاری، تاسیسات سرچاهی، فرآیندهای پالایش و سیستم‌های پایپینگ تحت فشار است.
-        - در پاسخ‌ها به استانداردهای مرجع API (نظیر API 520, API 650, API 1104) و استانداردهای ASME/ASTM استناد فرمایید.
-        """
-    },
-    {
-        "structural",
-        """
+        - پاسخ‌ها باید علمی، مستند به استانداردهای مرجع API (مانند API 520, API 650, API 1104) و استانداردهای ASME/ASTM و با ذکر روابط فنی ارائه شوند.
+        """,
+    ["structural"] = """
         شما یک مهندس ارشد محاسب سازه و مکانیک محیط‌های پیوسته هستید.
-        - تخصص شما: تحلیل خطی و غیرخطی المان محدود (FEM)، طراحی سیستم‌های باربر جانبی (قاب‌های مهاربندی، دیوارهای برشی)، تحلیل لرزه‌ای، بار باد، دینامیک خاک و پی است.
+        - تخصص شما: تحلیل خطی و غیرخطی FEM، طراحی سیستم‌های باربر جانبی، تحلیل لرزه‌ای، بار باد، دینامیک خاک و پی است.
         - استناد به آیین‌نامه‌های معتبر مانند AISC 360/341، ACI 318، ASCE 7 و مقررات ملی ساختمان در اولویت تحلیل‌های شماست.
-        """
-    },
-    {
-        "metallurgy",
-        """
+        """,
+    ["metallurgy"] = """
         شما یک متخصص ارشد مهندسی متالورژی و علم مواد هستید.
-        - تخصص شما: انتخاب گریدهای آلیاژی (فولادهای زنگ‌نزن، ابزار، سوپرآلیاژهای پایه نیکل، اینکونل، تیتانیوم)، تحلیل نمودارهای تعادلی TTT/CCT، چرخه‌های عملیات حرارتی، مکانیزم‌های شکست (Creep, Fatigue)، سایش و متالورژی جوش است.
+        - تخصص شما: انتخاب گریدهای آلیاژی، تحلیل دیاگرام‌های TTT/CCT، چرخه‌های عملیات حرارتی، مکانیزم‌های شکست (Creep, Fatigue)، سایش و متالورژی جوش است.
         - محاسبات و پیشنهادها را با استانداردهای دقیق DIN، AISI و ASTM مستند کنید.
-        """
-    },
-    {
-        "manufacturing",
-        """
+        """,
+    ["manufacturing"] = """
         شما یک مهندس ارشد ساخت، تولید و اتوماسیون خطوط تولید صنعتی هستید.
-        - تخصص شما: فرآیندهای براده‌برداری پیشرفته CNC (مسیر ابزار، سرعت برشی، نرخ پیشروی)، فرآیندهای شکل‌دهی فلزات، ریخته‌گری دقیق، استانداردهای بازرسی جوشکاری (AWS D1.1)، متدولوژی DFM/DFA و کنترل کیفیت آماری (SPC) است.
+        - تخصص شما: فرآیندهای براده‌برداری پیشرفته CNC، شکل‌دهی فلزات، ریخته‌گری دقیق، استانداردهای جوشکاری (AWS D1.1)، متدولوژی DFM/DFA و SPC است.
         - پاسخ‌ها باید شامل الزامات اجرایی کارگاهی، انتخاب ابزار و پارامترهای فنی دقیق باشد.
         """
-    }
 };
 
-// ۴. مسیر دریافت پیام و چت استریمینگ
-app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, HttpResponse response) =>
+app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, HttpResponse response, CancellationToken ct) =>
 {
-    if (request == null || string.IsNullOrWhiteSpace(request.Message))
+    if (request?.Messages == null || request.Messages.Count == 0)
     {
         response.StatusCode = StatusCodes.Status400BadRequest;
-        await response.WriteAsync("Message cannot be empty.");
+        await response.WriteAsync("پیامی ارسال نشده است.", ct);
         return;
     }
 
     var chatService = kernel.GetRequiredService<IChatCompletionService>();
     var history = new ChatHistory();
 
-    // استخراج کلید تخصص انتخاب‌شده
-    string roleKey = (request.Role ?? request.AssistantId ?? string.Empty).ToLower().Trim();
-
+    string roleKey = (request.Role ?? string.Empty).ToLower().Trim();
     string systemPrompt = assistantPrompts.GetValueOrDefault(
         roleKey,
-        "شما یک دستیار هوشمند، فنی و ارشد در تیم مهندسی صنایع سنگین (نفت، سازه، متالورژی، ساخت و تولید) هستید."
+        "شما یک دستیار هوشمند و ارشد در تیم مهندسی صنایع سنگین هستید."
     );
 
     history.AddSystemMessage(systemPrompt);
-    history.AddUserMessage(request.Message);
+
+    // افزودن تاریخچه مکالمه به نشست چت جهت حفظ زنجیره منطقی گفتگو
+    foreach (var msg in request.Messages.TakeLast(6)) // ارسال ۶ تبادل آخر برای جلوگیری از سرریز کانتکست
+    {
+        if (msg.Role.Equals("user", StringComparison.OrdinalIgnoreCase))
+            history.AddUserMessage(msg.Text);
+        else if (msg.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase))
+            history.AddAssistantMessage(msg.Text);
+    }
 
     response.ContentType = "text/plain; charset=utf-8";
 
-    // ارسال پاسخ زنده (Streaming) به فرانت‌اند
-    await foreach (var chunk in chatService.GetStreamingChatMessageContentsAsync(history))
+    try
     {
-        if (chunk.Content != null)
+        await foreach (var chunk in chatService.GetStreamingChatMessageContentsAsync(history, cancellationToken: ct))
         {
-            var bytes = Encoding.UTF8.GetBytes(chunk.Content);
-            await response.Body.WriteAsync(bytes);
-            await response.Body.FlushAsync();
+            if (chunk.Content != null)
+            {
+                var bytes = Encoding.UTF8.GetBytes(chunk.Content);
+                await response.Body.WriteAsync(bytes, ct);
+                await response.Body.FlushAsync(ct);
+            }
         }
+    }
+    catch (OperationCanceledException)
+    {
+        // در صورتی که کاربر استریم را کنسل کرد، پردازش سرور خاتمه می‌یابد
     }
 });
 
-// ۵. اجرا روی پورت ۵۰۶۰ (مستقل از پورت ۵۰۵۵ پروژه اول)
 app.Run("http://localhost:5060");
 
-// مدل ورودی درخواست
+public record ChatMessageItem(
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("text")] string Text
+);
+
 public record ChatRequest(
-    [property: JsonPropertyName("message")] string Message,
-    [property: JsonPropertyName("assistantId")] string? AssistantId = null,
-    [property: JsonPropertyName("role")] string? Role = null
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("messages")] List<ChatMessageItem> Messages
 );
