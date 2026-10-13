@@ -2,6 +2,7 @@
 using System.Text.Json.Serialization;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using AIAssistant.Backend; // فضای نام سرویس RAG
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,17 +10,20 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("FrontendPolicy", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://localhost:5174") // پورت‌های متداول React/Vite
+        policy.WithOrigins("http://localhost:3000", "http://localhost:5174")
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
 });
 
+// ثبت سرویس RAG به صورت تک‌نمونه (Singleton)
+builder.Services.AddSingleton<IPetroleumRagService, PetroleumRagService>();
+
 builder.Services.AddSingleton(sp =>
 {
     var kernelBuilder = Kernel.CreateBuilder();
     kernelBuilder.AddOpenAIChatCompletion(
-        modelId: "llama3.2:3b", // پیشنهاد جایگزین: qwen2.5:7b یا llama3.1:8b برای دقت فنی بالاتر
+        modelId: "llama3.2:3b",
         apiKey: "ollama-local",
         endpoint: new Uri("http://localhost:11434/v1")
     );
@@ -27,6 +31,14 @@ builder.Services.AddSingleton(sp =>
 });
 
 var app = builder.Build();
+
+// ایندکس کردن داده‌های دیتابیس مهندسی نفت به محض روشن شدن سرور
+using (var scope = app.Services.CreateScope())
+{
+    var ragService = scope.ServiceProvider.GetRequiredService<IPetroleumRagService>();
+    await ragService.InitializeAsync();
+}
+
 app.UseCors("FrontendPolicy");
 
 var assistantPrompts = new Dictionary<string, string>
@@ -53,7 +65,7 @@ var assistantPrompts = new Dictionary<string, string>
         """
 };
 
-app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, HttpResponse response, CancellationToken ct) =>
+app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, IPetroleumRagService ragService, HttpResponse response, CancellationToken ct) =>
 {
     if (request?.Messages == null || request.Messages.Count == 0)
     {
@@ -71,10 +83,26 @@ app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, HttpResponse
         "شما یک دستیار هوشمند و ارشد در تیم مهندسی صنایع سنگین هستید."
     );
 
+    // آخرین پیام کاربر را استخراج می‌کنیم
+    var lastUserMsg = request.Messages.LastOrDefault(m => m.Role.Equals("user", StringComparison.OrdinalIgnoreCase));
+
+    // در صورتی که نقش Petroleum باشد، RAG مستندات مرتبط را استخراج می‌کند
+    if (roleKey == "petroleum" && lastUserMsg != null)
+    {
+        var matchedDocs = ragService.Search(lastUserMsg.Text, topK: 3);
+        if (matchedDocs.Any())
+        {
+            var contextText = string.Join("\n---\n", matchedDocs.Select(d =>
+                $"[Source: {d.Source}]\nQuestion/Topic: {d.Question}\nReference Data: {d.Answer}"));
+
+            systemPrompt += $"\n\nاز مستندات فنی و تایید‌شده زیر برای پاسخ به کاربر استفاده کن و در صورت تطابق، به آن‌ها استناد کن:\n--- CONTEXT START ---\n{contextText}\n--- CONTEXT END ---";
+        }
+    }
+
     history.AddSystemMessage(systemPrompt);
 
-    // افزودن تاریخچه مکالمه به نشست چت جهت حفظ زنجیره منطقی گفتگو
-    foreach (var msg in request.Messages.TakeLast(6)) // ارسال ۶ تبادل آخر برای جلوگیری از سرریز کانتکست
+    // افزودن تاریخچه مکالمه
+    foreach (var msg in request.Messages.TakeLast(6))
     {
         if (msg.Role.Equals("user", StringComparison.OrdinalIgnoreCase))
             history.AddUserMessage(msg.Text);
@@ -98,7 +126,7 @@ app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, HttpResponse
     }
     catch (OperationCanceledException)
     {
-        // در صورتی که کاربر استریم را کنسل کرد، پردازش سرور خاتمه می‌یابد
+        // لغو استریم توسط کلاینت
     }
 });
 
