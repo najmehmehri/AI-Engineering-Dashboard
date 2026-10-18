@@ -2,10 +2,15 @@
 using System.Text.Json.Serialization;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
-using AIAssistant.Backend; // فضای نام سرویس RAG
+using AIAssistant.Backend;
+
+// ۱. تنظیم انکودینگ برای پشتیبانی کامل از کاراکترهای فارسی در کنسول و پایپ‌لاین
+Console.OutputEncoding = Encoding.UTF8;
+Console.InputEncoding = Encoding.UTF8;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ۲. پیکربندی CORS برای اتصال کلاینت Vite/React
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("FrontendPolicy", policy =>
@@ -16,15 +21,16 @@ builder.Services.AddCors(options =>
     });
 });
 
-// ثبت سرویس RAG به صورت تک‌نمونه (Singleton)
+// ۳. ثبت سرویس RAG اختصاصی نفت (تک‌نمونه / Singleton)
 builder.Services.AddSingleton<IPetroleumRagService, PetroleumRagService>();
 
+// ۴. اتصال به Ollama با شناسه دقیق مدل نصب‌شده (llama3-fa:latest)
 builder.Services.AddSingleton(sp =>
 {
     var kernelBuilder = Kernel.CreateBuilder();
     kernelBuilder.AddOpenAIChatCompletion(
-        modelId: "llama3.2:3b",
-        apiKey: "ollama-local",
+        modelId: "llama3-fa:latest",
+        apiKey: "secret-rnd-core",
         endpoint: new Uri("http://localhost:11434/v1")
     );
     return kernelBuilder.Build();
@@ -32,7 +38,7 @@ builder.Services.AddSingleton(sp =>
 
 var app = builder.Build();
 
-// ایندکس کردن داده‌های دیتابیس مهندسی نفت به محض روشن شدن سرور
+// ۵. مقداردهی اولیه و بارگیری چانک‌های متنی RAG هنگام روشن شدن سرور
 using (var scope = app.Services.CreateScope())
 {
     var ragService = scope.ServiceProvider.GetRequiredService<IPetroleumRagService>();
@@ -41,12 +47,13 @@ using (var scope = app.Services.CreateScope())
 
 app.UseCors("FrontendPolicy");
 
+// ۶. پرامپت‌های پایه‌ای نقش‌های مهندسی
 var assistantPrompts = new Dictionary<string, string>
 {
     ["petroleum"] = """
         شما یک مهندس ارشد و مشاور بین‌المللی مهندسی نفت، گاز و پتروشیمی هستید.
         - تخصص شما: مهندسی مخازن، شبیه‌سازی جریان چندفازی، مکانیک سیالات حفاری، تاسیسات سرچاهی، فرآیندهای پالایش و سیستم‌های پایپینگ تحت فشار است.
-        - پاسخ‌ها باید علمی، مستند به استانداردهای مرجع API (مانند API 520, API 650, API 1104) و استانداردهای ASME/ASTM و با ذکر روابط فنی ارائه شوند.
+        - پاسخ‌ها باید علمی، مستند به استانداردهای مرجع API (مانند API Spec 6A, API 570, API 1104) و استانداردهای ASME/ASTM و با ذکر روابط فنی ارائه شوند.
         """,
     ["structural"] = """
         شما یک مهندس ارشد محاسب سازه و مکانیک محیط‌های پیوسته هستید.
@@ -65,8 +72,22 @@ var assistantPrompts = new Dictionary<string, string>
         """
 };
 
-app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, IPetroleumRagService ragService, HttpResponse response, CancellationToken ct) =>
+// ۷. تنظیمات قفل دمای مدل برای دقت بالای محاسبات مهندسی و ممانعت از هذیان
+var executionSettings = new PromptExecutionSettings
 {
+    ExtensionData = new Dictionary<string, object>
+    {
+        { "temperature", 0.05 },
+        { "top_p", 0.85 },
+        { "repeat_penalty", 1.2 }
+    }
+};
+
+// ۸. اندپوینت استریم چت با تلفیق RAG
+app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, IPetroleumRagService ragService, HttpResponse response, HttpContext httpContext) =>
+{
+    var ct = httpContext.RequestAborted;
+
     if (request?.Messages == null || request.Messages.Count == 0)
     {
         response.StatusCode = StatusCodes.Status400BadRequest;
@@ -83,25 +104,35 @@ app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, IPetroleumRa
         "شما یک دستیار هوشمند و ارشد در تیم مهندسی صنایع سنگین هستید."
     );
 
-    // آخرین پیام کاربر را استخراج می‌کنیم
+    // آخرین پیام کاربر برای بازیابی RAG
     var lastUserMsg = request.Messages.LastOrDefault(m => m.Role.Equals("user", StringComparison.OrdinalIgnoreCase));
 
-    // در صورتی که نقش Petroleum باشد، RAG مستندات مرتبط را استخراج می‌کند
+    // در صورتی که نقش Petroleum باشد، داده‌های مرجع استخراج و الصاق می‌شوند
     if (roleKey == "petroleum" && lastUserMsg != null)
     {
         var matchedDocs = ragService.Search(lastUserMsg.Text, topK: 3);
         if (matchedDocs.Any())
         {
             var contextText = string.Join("\n---\n", matchedDocs.Select(d =>
-                $"[Source: {d.Source}]\nQuestion/Topic: {d.Question}\nReference Data: {d.Answer}"));
+                $"[Source File: {d.Source}]\nHeader/Topic: {d.Topic}\nTechnical Specification:\n{d.Content}"));
 
-            systemPrompt += $"\n\nاز مستندات فنی و تایید‌شده زیر برای پاسخ به کاربر استفاده کن و در صورت تطابق، به آن‌ها استناد کن:\n--- CONTEXT START ---\n{contextText}\n--- CONTEXT END ---";
+            systemPrompt += $"\n\n[مستندات فنی و مهندسی سرچاهی تأیید‌شده]:\n{contextText}\n\nدستور اکید: پاسخ خود را دقیقاً با استناد به مقادیر و کدهای موجود در مستندات بالا ارائه بده.";
+
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"[RAG Injected] {matchedDocs.Count} chunks injected for query: {lastUserMsg.Text}");
+            Console.ResetColor();
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"[RAG Warning] No matching context found for: {lastUserMsg.Text}");
+            Console.ResetColor();
         }
     }
 
     history.AddSystemMessage(systemPrompt);
 
-    // افزودن تاریخچه مکالمه
+    // افزودن تاریخچه تعامل کلاینت
     foreach (var msg in request.Messages.TakeLast(6))
     {
         if (msg.Role.Equals("user", StringComparison.OrdinalIgnoreCase))
@@ -114,7 +145,7 @@ app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, IPetroleumRa
 
     try
     {
-        await foreach (var chunk in chatService.GetStreamingChatMessageContentsAsync(history, cancellationToken: ct))
+        await foreach (var chunk in chatService.GetStreamingChatMessageContentsAsync(history, executionSettings, kernel, ct))
         {
             if (chunk.Content != null)
             {
@@ -126,9 +157,36 @@ app.MapPost("/api/chat", async (ChatRequest request, Kernel kernel, IPetroleumRa
     }
     catch (OperationCanceledException)
     {
-        // لغو استریم توسط کلاینت
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine("[Chat Stream] Client canceled request.");
+        Console.ResetColor();
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"[Ollama/Runtime Error] {ex.GetType().Name}: {ex.Message}");
+        if (ex.InnerException != null)
+        {
+            Console.WriteLine($"[Details]: {ex.InnerException.Message}");
+        }
+        Console.ResetColor();
+
+        if (!response.HasStarted)
+        {
+            response.StatusCode = StatusCodes.Status500InternalServerError;
+            await response.WriteAsync($"خطای سرور در ارتباط با مدل: {ex.Message}", ct);
+        }
     }
 });
+
+// اندپوینت بررسی سلامت سرور
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "Healthy",
+    model = "llama3-fa:latest",
+    port = 5060,
+    timestamp = DateTime.UtcNow
+}));
 
 app.Run("http://localhost:5060");
 

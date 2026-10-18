@@ -1,11 +1,6 @@
-﻿using System.Text.Json;
-using System.Globalization;
-using CsvHelper;
-using CsvHelper.Configuration;
-
-namespace AIAssistant.Backend
+﻿namespace AIAssistant.Backend
 {
-    public record KnowledgeItem(string Source, string Question, string Answer);
+    public record KnowledgeItem(string Source, string Topic, string Content);
 
     public interface IPetroleumRagService
     {
@@ -23,8 +18,27 @@ namespace AIAssistant.Backend
         public PetroleumRagService(IWebHostEnvironment env, ILogger<PetroleumRagService> logger)
         {
             _logger = logger;
-            // مسیر پوشه KnowledgeBase بر اساس روت پروژه
-            _knowledgeBasePath = Path.Combine(env.ContentRootPath, "KnowledgeBase");
+
+            // اولویت با فولدر اختصاصی Petroleum
+            var candidatePaths = new List<string>
+            {
+                @"D:\AI-HeavyEngineering-Dashboard\AIAssistant.Backend\KnowledgeBase\Petroleum",
+                Path.Combine(env.ContentRootPath, "KnowledgeBase", "Petroleum"),
+                Path.Combine(env.ContentRootPath, "KnowledgeBase"),
+                Path.Combine(AppContext.BaseDirectory, "KnowledgeBase", "Petroleum")
+            };
+
+            var currentDir = new DirectoryInfo(env.ContentRootPath);
+            while (currentDir != null)
+            {
+                var testPath = Path.Combine(currentDir.FullName, "KnowledgeBase", "Petroleum");
+                if (!candidatePaths.Contains(testPath))
+                    candidatePaths.Add(testPath);
+                currentDir = currentDir.Parent;
+            }
+
+            _knowledgeBasePath = candidatePaths.FirstOrDefault(Directory.Exists) ?? candidatePaths.First();
+            _logger.LogInformation($"[RAG Initialized] Targeted KnowledgeBase path: {_knowledgeBasePath} (Exists: {Directory.Exists(_knowledgeBasePath)})");
         }
 
         public async Task InitializeAsync()
@@ -33,82 +47,46 @@ namespace AIAssistant.Backend
 
             if (!Directory.Exists(_knowledgeBasePath))
             {
-                _logger.LogWarning($"KnowledgeBase directory not found at: {_knowledgeBasePath}");
+                _logger.LogWarning($"[RAG Warning] Directory not found at: {_knowledgeBasePath}");
                 return;
             }
 
-            _logger.LogInformation("Indexing Petroleum Knowledge Base files...");
+            _logger.LogInformation("[RAG Starting] Loading text engineering specifications...");
+            _knowledgeStore.Clear();
 
-            // 1. بارگیری داده‌های JSON (SPE MCQ)
-            var jsonPath = Path.Combine(_knowledgeBasePath, "formationeval_spe_mcq_v0.3.json");
-            if (File.Exists(jsonPath))
+            // فقط فایل‌های متنی .txt و .md ایندکس می‌شوند
+            var textFiles = Directory.GetFiles(_knowledgeBasePath, "*.txt", SearchOption.AllDirectories)
+                .Concat(Directory.GetFiles(_knowledgeBasePath, "*.md", SearchOption.AllDirectories));
+
+            foreach (var filePath in textFiles)
             {
                 try
                 {
-                    var jsonContent = await File.ReadAllTextAsync(jsonPath);
-                    using var doc = JsonDocument.Parse(jsonContent);
+                    var fileContent = await File.ReadAllTextAsync(filePath);
+                    var fileName = Path.GetFileName(filePath);
 
-                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    // تفکیک بر مبنای خطوط خالی (پاراگراف‌ها یا سکشن‌های مستقل)
+                    var sections = fileContent.Split(new[] { "\r\n\r\n", "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
+
+                    foreach (var section in sections)
                     {
-                        foreach (var el in doc.RootElement.EnumerateArray())
-                        {
-                            var q = el.TryGetProperty("question", out var qProp) ? qProp.GetString() : "";
-                            var a = el.TryGetProperty("answer", out var aProp) ? aProp.GetString() :
-                                   (el.TryGetProperty("explanation", out var expProp) ? expProp.GetString() : "");
+                        var trimmedSection = section.Trim();
+                        if (string.IsNullOrWhiteSpace(trimmedSection)) continue;
 
-                            if (!string.IsNullOrWhiteSpace(q))
-                            {
-                                _knowledgeStore.Add(new KnowledgeItem("SPE_MCQ", q, a ?? ""));
-                            }
-                        }
+                        var lines = trimmedSection.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                        string topic = lines.Length > 0 ? lines[0] : "Petroleum Engineering Spec";
+
+                        _knowledgeStore.Add(new KnowledgeItem(fileName, topic, trimmedSection));
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error reading SPE MCQ JSON");
-                }
-            }
-
-            // 2. بارگیری CSV های FORCE و GeoGPT
-            var csvFiles = Directory.GetFiles(_knowledgeBasePath, "*.csv");
-            var csvConfig = new CsvConfiguration(CultureInfo.InvariantCulture)
-            {
-                MissingFieldFound = null,
-                HeaderValidated = null,
-                BadDataFound = null
-            };
-
-            foreach (var file in csvFiles)
-            {
-                try
-                {
-                    var fileName = Path.GetFileName(file);
-                    using var reader = new StreamReader(file);
-                    using var csv = new CsvReader(reader, csvConfig);
-
-                    var records = csv.GetRecords<dynamic>();
-                    foreach (var row in records)
-                    {
-                        var dict = (IDictionary<string, object>)row;
-
-                        // شناسایی داینامیک ستون‌های سوال و جواب
-                        string question = dict.FirstOrDefault(k => k.Key.Contains("question", StringComparison.OrdinalIgnoreCase) || k.Key.Contains("prompt", StringComparison.OrdinalIgnoreCase)).Value?.ToString() ?? "";
-                        string answer = dict.FirstOrDefault(k => k.Key.Contains("answer", StringComparison.OrdinalIgnoreCase) || k.Key.Contains("response", StringComparison.OrdinalIgnoreCase)).Value?.ToString() ?? "";
-
-                        if (!string.IsNullOrWhiteSpace(question))
-                        {
-                            _knowledgeStore.Add(new KnowledgeItem(fileName, question, answer));
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Error parsing CSV: {file}");
+                    _logger.LogError(ex, $"[RAG Error] Failed to read text document: {filePath}");
                 }
             }
 
             _isInitialized = true;
-            _logger.LogInformation($"Indexing complete. Total indexed items: {_knowledgeStore.Count}");
+            _logger.LogInformation($"[RAG Ready] Indexed {_knowledgeStore.Count} text knowledge chunks.");
         }
 
         public List<KnowledgeItem> Search(string query, int topK = 3)
@@ -116,19 +94,20 @@ namespace AIAssistant.Backend
             if (!_isInitialized || string.IsNullOrWhiteSpace(query))
                 return new List<KnowledgeItem>();
 
-            var tokens = query.ToLower().Split(new[] { ' ', '?', ',', '.', ':', '!' }, StringSplitOptions.RemoveEmptyEntries)
+            var tokens = query.ToLower()
+                              .Split(new[] { ' ', '?', ',', '.', ':', '!', '؛', '،', '\t', '\r', '\n', '-', '_' }, StringSplitOptions.RemoveEmptyEntries)
                               .Where(t => t.Length > 2)
+                              .Distinct()
                               .ToList();
 
             if (!tokens.Any())
                 return new List<KnowledgeItem>();
 
-            // رتبه‌بندی ساده و فوق‌العاده سریع با تطبیق کلیدواژه‌ها
             var ranked = _knowledgeStore
                 .Select(item =>
                 {
-                    var text = (item.Question + " " + item.Answer).ToLower();
-                    int score = tokens.Count(t => text.Contains(t));
+                    var fullText = (item.Topic + " " + item.Content).ToLower();
+                    int score = tokens.Count(token => fullText.Contains(token));
                     return new { item, score };
                 })
                 .Where(x => x.score > 0)

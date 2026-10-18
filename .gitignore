@@ -1,7 +1,19 @@
-node_modules/ 
-dist/ 
-bin/ 
-obj/ 
-*.user 
-*.suo 
+# Visual Studio & VS Code
+.vs/
 .vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build Results & Dependencies
+bin/
+obj/
+node_modules/
+dist/
+
+# Large Datasets / Fine-tuning files (reserved locally)
+*.csv
+*.json
+!package.json
+!tsconfig.json
