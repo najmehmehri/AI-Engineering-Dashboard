@@ -9,6 +9,7 @@ import {
     Bot,
     User,
     Sparkles,
+    PlusCircle,
     Plus,
     Trash2,
     MessageSquare,
@@ -16,7 +17,9 @@ import {
     ChevronRight,
     ArrowLeftRight,
     Sun,
-    Moon
+    Moon,
+    Paperclip,
+    X
 } from 'lucide-react';
 
 const ASSISTANTS = [
@@ -58,7 +61,6 @@ const ASSISTANTS = [
     }
 ];
 
-// پالت‌های رنگی اختصاصی برای حالت تاریک و تم نقره‌ای یاسی
 const THEMES = {
     dark: {
         bg: 'linear-gradient(135deg, #0e0725 0%, #170936 45%, #230847 100%)',
@@ -83,12 +85,13 @@ const THEMES = {
         itemActiveBorder: 'rgba(255, 255, 255, 0.28)',
         itemInactiveBorder: 'rgba(255, 255, 255, 0.05)',
         dropdownBg: 'rgba(25, 14, 52, 0.95)',
+        toastBg: 'rgba(30, 18, 60, 0.85)',
+        toastBorder: 'rgba(168, 85, 247, 0.45)',
         orb1: 'radial-gradient(circle, #00d2ff 0%, #0066ff 70%)',
         orb2: 'radial-gradient(circle, #ff2a85 0%, #8b008b 70%)',
         orbOpacity: 0.45
     },
     light: {
-        // پس‌زمینه نقره‌ای یاسی (Silver-Lilac)
         bg: 'linear-gradient(135deg, #f5f2f8 0%, #ebe4f4 45%, #ded2ee 100%)',
         textPrimary: '#1a0b2e',
         textSecondary: '#5a4675',
@@ -111,10 +114,32 @@ const THEMES = {
         itemActiveBorder: 'rgba(168, 85, 247, 0.4)',
         itemInactiveBorder: 'rgba(168, 85, 247, 0.1)',
         dropdownBg: 'rgba(255, 255, 255, 0.96)',
+        toastBg: 'rgba(255, 255, 255, 0.92)',
+        toastBorder: 'rgba(168, 85, 247, 0.5)',
         orb1: 'radial-gradient(circle, #38bdf8 0%, #818cf8 70%)',
         orb2: 'radial-gradient(circle, #f472b6 0%, #c084fc 70%)',
         orbOpacity: 0.25
     }
+};
+
+// پسوندهای مجاز فایل متنی
+const ALLOWED_EXTENSIONS = ['txt', 'md', 'log', 'csv', 'json'];
+const ALLOWED_ACCEPT = ALLOWED_EXTENSIONS.map((ext) => `.${ext}`).join(',');
+
+const buildSession = (roleId, id = `session-${Date.now()}`) => {
+    const assistant = ASSISTANTS.find((a) => a.id === roleId) || ASSISTANTS[0];
+    return {
+        id,
+        roleId: assistant.id,
+        title: `گفتگوی جدید ${assistant.title.split(' ')[1] || ''}`,
+        createdAt: new Date(),
+        messages: [{ role: 'assistant', content: assistant.initialGreeting }]
+    };
+};
+
+const isAllowedTextFile = (file) => {
+    const ext = file.name.split('.').pop().toLowerCase();
+    return ALLOWED_EXTENSIONS.includes(ext);
 };
 
 export default function App() {
@@ -124,25 +149,23 @@ export default function App() {
     const [isRolesOpen, setIsRolesOpen] = useState(true);
     const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
 
-    const [sessions, setSessions] = useState([
-        {
-            id: 'session-1',
-            roleId: 'petroleum',
-            title: 'گفتگوی نفت و پتروشیمی',
-            createdAt: new Date(),
-            messages: [
-                { role: 'assistant', content: ASSISTANTS[0].initialGreeting }
-            ]
-        }
-    ]);
-
+    const [sessions, setSessions] = useState(() => [buildSession('petroleum', 'session-1')]);
     const [currentSessionId, setCurrentSessionId] = useState('session-1');
     const [inputPrompt, setInputPrompt] = useState('');
     const [isLoading, setIsLoading] = useState(false);
 
+    // ویژگی ۲: نمایش بنر «به زودی» دستیار سفارشی
+    const [showCustomAssistantToast, setShowCustomAssistantToast] = useState(false);
+
+    // ویژگی ۳: فایل پیوست‌شده (متنی)
+    const [attachedFile, setAttachedFile] = useState(null); // { name, content }
+    const [attachError, setAttachError] = useState('');
+
     const abortControllerRef = useRef(null);
     const messagesEndRef = useRef(null);
     const dropdownRef = useRef(null);
+    const fileInputRef = useRef(null);
+    const toastTimeoutRef = useRef(null);
 
     const t = THEMES[theme];
     const currentSession = sessions.find((s) => s.id === currentSessionId) || sessions[0];
@@ -162,50 +185,51 @@ export default function App() {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const toggleTheme = () => {
-        setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+    // پاک‌سازی تایمر بنر هنگام unmount
+    useEffect(() => () => {
+        if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    }, []);
+
+    const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+
+    // ویژگی ۲: کلیک روی «افزودن دستیار تخصصی شما»
+    const handleAddCustomAssistant = () => {
+        setShowCustomAssistantToast(true);
+        if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+        toastTimeoutRef.current = setTimeout(() => setShowCustomAssistantToast(false), 5000);
     };
 
     const handleCreateNewChat = (targetRole = selectedRole) => {
         if (isLoading && abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
-        const roleInfo = ASSISTANTS.find((a) => a.id === targetRole) || ASSISTANTS[0];
-        const newSessionId = `session-${Date.now()}`;
-        const newSession = {
-            id: newSessionId,
-            roleId: targetRole,
-            title: `گفتگوی جدید ${roleInfo.title.split(' ')[1] || ''}`,
-            createdAt: new Date(),
-            messages: [
-                { role: 'assistant', content: roleInfo.initialGreeting }
-            ]
-        };
-
-        setSessions((prev) => [newSession, ...prev]);
-        setCurrentSessionId(newSessionId);
+        const next = buildSession(targetRole);
+        setSessions((prev) => [next, ...prev]);
+        setCurrentSessionId(next.id);
         setSelectedRole(targetRole);
         setIsLoading(false);
+        setAttachedFile(null);
+        setAttachError('');
     };
 
     const handleInChatRoleSwitch = (newRoleId) => {
         setSelectedRole(newRoleId);
         setIsRoleDropdownOpen(false);
-
-        setSessions((prev) =>
-            prev.map((s) => (s.id === currentSessionId ? { ...s, roleId: newRoleId } : s))
-        );
-
         const newAsst = ASSISTANTS.find((a) => a.id === newRoleId);
-        const switchNotice = {
-            role: 'assistant',
-            content: `نقش دستیار در این گفتگو به **${newAsst?.title}** تغییر یافت. مراجع و مستندات این تخصص فعال گردید.`
-        };
-
         setSessions((prev) =>
             prev.map((s) =>
                 s.id === currentSessionId
-                    ? { ...s, messages: [...s.messages, switchNotice] }
+                    ? {
+                        ...s,
+                        roleId: newRoleId,
+                        messages: [
+                            ...s.messages,
+                            {
+                                role: 'assistant',
+                                content: `نقش دستیار در این گفتگو به **${newAsst?.title}** تغییر یافت. مراجع و مستندات این تخصص فعال گردید.`
+                            }
+                        ]
+                    }
                     : s
             )
         );
@@ -215,19 +239,10 @@ export default function App() {
         e.stopPropagation();
         const updated = sessions.filter((s) => s.id !== idToDelete);
         if (updated.length === 0) {
-            const newId = `session-${Date.now()}`;
-            const defaultRole = ASSISTANTS[0];
-            setSessions([
-                {
-                    id: newId,
-                    roleId: defaultRole.id,
-                    title: 'گفتگوی جدید',
-                    createdAt: new Date(),
-                    messages: [{ role: 'assistant', content: defaultRole.initialGreeting }]
-                }
-            ]);
-            setCurrentSessionId(newId);
-            setSelectedRole(defaultRole.id);
+            const next = buildSession(ASSISTANTS[0].id);
+            setSessions([next]);
+            setCurrentSessionId(next.id);
+            setSelectedRole(next.roleId);
         } else {
             setSessions(updated);
             if (currentSessionId === idToDelete) {
@@ -245,22 +260,72 @@ export default function App() {
         setIsLoading(false);
     };
 
+    // ویژگی ۳: انتخاب و خواندن فایل متنی با FileReader
+    const handleFileSelect = (event) => {
+        const file = event.target.files?.[0];
+        event.target.value = ''; // اجازه انتخاب مجدد همان فایل
+        setAttachError('');
+        if (!file) return;
+
+        if (!isAllowedTextFile(file)) {
+            setAttachError('فقط فایل‌های متنی (.txt، .md، .log، .csv، .json) مجاز هستند.');
+            return;
+        }
+        if (file.size > 2 * 1024 * 1024) {
+            setAttachError('حجم فایل پیوست نباید بیشتر از ۲ مگابایت باشد.');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            setAttachedFile({ name: file.name, content: String(reader.result ?? '') });
+        };
+        reader.onerror = () => setAttachError('خواندن فایل با خطا مواجه شد. لطفاً دوباره تلاش کنید.');
+        reader.readAsText(file, 'utf-8');
+    };
+
+    const handleRemoveAttachment = () => {
+        setAttachedFile(null);
+        setAttachError('');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
     const handleSend = async () => {
         const text = inputPrompt.trim();
-        if (!text || isLoading) return;
+        if (!text && !attachedFile) return;
+        if (isLoading) return;
+
+        // اگر فایل پیوست exists، محتوای آن به‌عنوان زمینه به پرامپت اضافه می‌شود
+        const finalText = attachedFile
+            ? `[پیوست: ${attachedFile.name}]\n${attachedFile.content}\n\n${text}`
+            : text;
+
+        const sessionAtSend = currentSession;
+        const userMsg = { role: 'user', content: finalText };
+
+        // ویژگی ۱: ارسال تاریخچه کامل + پیام فعلی به بک‌اند با ساختار { role, text }
+        const messagesForBackend = [
+            ...sessionAtSend.messages,
+            userMsg
+        ]
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m) => ({ role: m.role, text: m.content || '' }));
 
         setInputPrompt('');
+        setAttachedFile(null); // ریست پیوست بعد از ارسال
+        setAttachError('');
         setIsLoading(true);
-
-        const userMsg = { role: 'user', content: text };
 
         setSessions((prev) =>
             prev.map((s) => {
                 if (s.id === currentSessionId) {
                     const isFirst = s.messages.filter((m) => m.role === 'user').length === 0;
+                    const displayTitle = text || `پیوست ${attachedFile?.name || 'فایل'}`;
                     return {
                         ...s,
-                        title: isFirst ? (text.slice(0, 22) + (text.length > 22 ? '...' : '')) : s.title,
+                        title: isFirst
+                            ? displayTitle.slice(0, 22) + (displayTitle.length > 22 ? '...' : '')
+                            : s.title,
                         messages: [...s.messages, userMsg, { role: 'assistant', content: '' }]
                     };
                 }
@@ -271,11 +336,6 @@ export default function App() {
         abortControllerRef.current = new AbortController();
 
         try {
-            const messagesForBackend = [...currentSession.messages, userMsg].map((m) => ({
-                role: m.role,
-                text: m.content
-            }));
-
             const response = await fetch('http://localhost:5060/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -304,7 +364,7 @@ export default function App() {
                             const lastIndex = newMsgs.length - 1;
                             newMsgs[lastIndex] = {
                                 ...newMsgs[lastIndex],
-                                content: newMsgs[lastIndex].content + chunk
+                                content: (newMsgs[lastIndex].content || '') + chunk
                             };
                             return { ...s, messages: newMsgs };
                         }
@@ -313,38 +373,29 @@ export default function App() {
                 );
             }
         } catch (error) {
+            let errorContent;
             if (error.name === 'AbortError') {
-                setSessions((prev) =>
-                    prev.map((s) => {
-                        if (s.id === currentSessionId) {
-                            const newMsgs = [...s.messages];
-                            const lastIndex = newMsgs.length - 1;
-                            newMsgs[lastIndex] = {
-                                ...newMsgs[lastIndex],
-                                content: (newMsgs[lastIndex].content || '') + ' [توسط کاربر متوقف شد]'
-                            };
-                            return { ...s, messages: newMsgs };
-                        }
-                        return s;
-                    })
-                );
-            } else {
-                console.error('Chat error:', error);
-                setSessions((prev) =>
-                    prev.map((s) => {
-                        if (s.id === currentSessionId) {
-                            const newMsgs = [...s.messages];
-                            const lastIndex = newMsgs.length - 1;
-                            newMsgs[lastIndex] = {
-                                ...newMsgs[lastIndex],
-                                content: 'متأسفانه در دریافت پاسخ از سرور یا ارتباط با مدل خطایی رخ داد.'
-                            };
-                            return { ...s, messages: newMsgs };
-                        }
-                        return s;
-                    })
-                );
+                errorContent = null; // به محتوای فعلی اضافه می‌شود
             }
+            setSessions((prev) =>
+                prev.map((s) => {
+                    if (s.id === currentSessionId) {
+                        const newMsgs = [...s.messages];
+                        const lastIndex = newMsgs.length - 1;
+                        const base = newMsgs[lastIndex].content || '';
+                        newMsgs[lastIndex] = {
+                            ...newMsgs[lastIndex],
+                            content:
+                                error.name === 'AbortError'
+                                    ? base + ' [توسط کاربر متوقف شد]'
+                                    : 'متأسفانه در دریافت پاسخ از سرور یا ارتباط با مدل خطایی رخ داد.'
+                        };
+                        return { ...s, messages: newMsgs };
+                    }
+                    return s;
+                })
+            );
+            if (error.name !== 'AbortError') console.error('Chat error:', error);
         } finally {
             setIsLoading(false);
             abortControllerRef.current = null;
@@ -356,6 +407,18 @@ export default function App() {
             e.preventDefault();
             handleSend();
         }
+    };
+
+    const panelButtonStyle = {
+        background: t.inputBg,
+        border: `1px solid ${t.inputBorder}`,
+        color: t.textPrimary,
+        borderRadius: '10px',
+        padding: '8px',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
     };
 
     return (
@@ -408,7 +471,7 @@ export default function App() {
                 }}
             />
 
-            {/* ۱. سایدبار راست: سابقه گفتگوها (کامل کشویی بدون لیکیج) */}
+            {/* ۱. سایدبار راست: سابقه گفتگوها */}
             <aside
                 style={{
                     width: isHistoryOpen ? '270px' : '0px',
@@ -480,7 +543,9 @@ export default function App() {
                                     fontSize: '12px',
                                     cursor: 'pointer',
                                     background: isCurrent ? t.itemActiveBg : 'transparent',
-                                    border: isCurrent ? `1px solid ${t.itemActiveBorder}` : `1px solid ${t.itemInactiveBorder}`,
+                                    border: isCurrent
+                                        ? `1px solid ${t.itemActiveBorder}`
+                                        : `1px solid ${t.itemInactiveBorder}`,
                                     color: isCurrent ? t.textPrimary : t.textSecondary
                                 }}
                             >
@@ -516,11 +581,13 @@ export default function App() {
                     overflow: 'hidden',
                     background: t.mainBg,
                     backdropFilter: 'blur(16px)',
+                    WebkitBackdropFilter: 'blur(16px)',
                     zIndex: 1,
-                    minWidth: 0
+                    minWidth: 0,
+                    position: 'relative'
                 }}
             >
-                {/* هدر بالایی با کنترل‌های سایدبار و تم */}
+                {/* هدر */}
                 <header
                     style={{
                         height: '68px',
@@ -534,21 +601,10 @@ export default function App() {
                     }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        {/* دکمه باز/بست سایدبار تاریخچه */}
                         <button
                             onClick={() => setIsHistoryOpen(!isHistoryOpen)}
                             title={isHistoryOpen ? 'بستن تاریخچه' : 'باز کردن تاریخچه'}
-                            style={{
-                                background: t.inputBg,
-                                border: `1px solid ${t.inputBorder}`,
-                                color: t.textPrimary,
-                                borderRadius: '10px',
-                                padding: '8px',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center'
-                            }}
+                            style={panelButtonStyle}
                         >
                             {isHistoryOpen ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
                         </button>
@@ -572,23 +628,10 @@ export default function App() {
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        {/* دکمه انتخاب Dark Mode / Light Mode */}
                         <button
                             onClick={toggleTheme}
                             title={theme === 'dark' ? 'تغییر به تم نقره‌ای یاسی' : 'تغییر به تم دارک بنفش'}
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '8px',
-                                padding: '8px 14px',
-                                borderRadius: '14px',
-                                background: t.inputBg,
-                                border: `1px solid ${t.inputBorder}`,
-                                color: t.textPrimary,
-                                cursor: 'pointer',
-                                fontSize: '12px',
-                                fontWeight: 'bold'
-                            }}
+                            style={{ ...panelButtonStyle, gap: '8px', padding: '8px 14px', fontSize: '12px', fontWeight: 'bold' }}
                         >
                             {theme === 'dark' ? (
                                 <>
@@ -603,21 +646,10 @@ export default function App() {
                             )}
                         </button>
 
-                        {/* دکمه باز/بست پنل تخصص‌ها */}
                         <button
                             onClick={() => setIsRolesOpen(!isRolesOpen)}
                             title={isRolesOpen ? 'بستن پنل تخصص‌ها' : 'باز کردن پنل تخصص‌ها'}
-                            style={{
-                                background: t.inputBg,
-                                border: `1px solid ${t.inputBorder}`,
-                                color: t.textPrimary,
-                                borderRadius: '10px',
-                                padding: '8px',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center'
-                            }}
+                            style={panelButtonStyle}
                         >
                             {isRolesOpen ? <ChevronLeft size={18} /> : <ChevronRight size={18} />}
                         </button>
@@ -640,6 +672,7 @@ export default function App() {
                                         border: isAssistant ? `1px solid ${t.msgAssistantBorder}` : `1px solid ${t.msgUserBorder}`,
                                         background: isAssistant ? t.msgAssistantBg : t.msgUserBg,
                                         backdropFilter: 'blur(20px)',
+                                        WebkitBackdropFilter: 'blur(20px)',
                                         boxShadow: isAssistant ? '0 8px 30px rgba(0, 0, 0, 0.15)' : '0 8px 25px rgba(255, 42, 133, 0.15)',
                                         display: 'flex',
                                         alignItems: 'flex-start',
@@ -651,7 +684,9 @@ export default function App() {
                                         style={{
                                             padding: '9px',
                                             borderRadius: '12px',
-                                            background: isAssistant ? (theme === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(168, 85, 247, 0.12)') : 'linear-gradient(135deg, #ff2a85, #ff73a8)',
+                                            background: isAssistant
+                                                ? (theme === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(168, 85, 247, 0.12)')
+                                                : 'linear-gradient(135deg, #ff2a85, #ff73a8)',
                                             border: '1px solid rgba(255, 255, 255, 0.2)',
                                             color: isAssistant ? currentAssistant.accentColor : '#ffffff',
                                             display: 'flex',
@@ -672,165 +707,258 @@ export default function App() {
                     <div ref={messagesEndRef} />
                 </div>
 
-                {/* فوتر چت: دراپ‌داون سوییچ نقش، ورودی متن و دکمه‌های Send / Stop */}
+                {/* فوتر چت */}
                 <div
                     style={{
                         padding: '18px 28px',
                         borderTop: `1px solid ${t.headerBorder}`,
                         background: t.footerBg,
                         backdropFilter: 'blur(20px)',
+                        WebkitBackdropFilter: 'blur(20px)',
                         flexShrink: 0
                     }}
                 >
-                    <div style={{ maxWidth: '960px', margin: '0 auto', display: 'flex', gap: '10px', alignItems: 'center', position: 'relative' }}>
+                    <div style={{ maxWidth: '960px', margin: '0 auto' }}>
+                        {/* نشان فایل پیوست‌شده */}
+                        {(attachedFile || attachError) && (
+                            <div style={{ marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                                {attachedFile && (
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                            padding: '7px 12px',
+                                            borderRadius: '12px',
+                                            background: t.inputBg,
+                                            border: `1px solid ${t.inputBorder}`,
+                                            backdropFilter: 'blur(12px)',
+                                            fontSize: '12px',
+                                            color: t.textPrimary
+                                        }}
+                                    >
+                                        <Paperclip size={14} style={{ color: currentAssistant.accentColor }} />
+                                        <span style={{ fontWeight: 'bold' }}>{attachedFile.name}</span>
+                                        <span style={{ color: t.textMuted, fontSize: '10px' }}>
+                                            {(attachedFile.content.length / 1024).toFixed(1)} کیلوبایت
+                                        </span>
+                                        <button
+                                            onClick={handleRemoveAttachment}
+                                            title="حذف پیوست"
+                                            style={{
+                                                background: 'none',
+                                                border: 'none',
+                                                color: t.textMuted,
+                                                cursor: 'pointer',
+                                                padding: '2px',
+                                                display: 'flex',
+                                                alignItems: 'center'
+                                            }}
+                                        >
+                                            <X size={14} />
+                                        </button>
+                                    </div>
+                                )}
+                                {attachError && (
+                                    <div
+                                        style={{
+                                            padding: '7px 12px',
+                                            borderRadius: '12px',
+                                            background: 'rgba(239, 68, 68, 0.15)',
+                                            border: '1px solid rgba(239, 68, 68, 0.45)',
+                                            color: theme === 'dark' ? '#fca5a5' : '#b91c1c',
+                                            fontSize: '11px'
+                                        }}
+                                    >
+                                        {attachError}
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
-                        {/* ۱. دکمه و منوی سوییچ تخصص در چت جاری */}
-                        <div style={{ position: 'relative' }} ref={dropdownRef}>
-                            <button
-                                onClick={() => setIsRoleDropdownOpen(!isRoleDropdownOpen)}
-                                title="تغییر تخصص دستیار در همین چت"
+                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', position: 'relative' }}>
+                            {/* ۱. سوییچ تخصص */}
+                            <div style={{ position: 'relative' }} ref={dropdownRef}>
+                                <button
+                                    onClick={() => setIsRoleDropdownOpen(!isRoleDropdownOpen)}
+                                    title="تغییر تخصص دستیار در همین چت"
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                        padding: '12px 14px',
+                                        borderRadius: '16px',
+                                        background: t.inputBg,
+                                        border: `1px solid ${t.inputBorder}`,
+                                        color: currentAssistant.accentColor,
+                                        cursor: 'pointer',
+                                        fontSize: '12px',
+                                        fontWeight: 'bold',
+                                        whiteSpace: 'nowrap'
+                                    }}
+                                >
+                                    <ArrowLeftRight size={15} />
+                                    <span>{currentAssistant.title.split(' ')[1]}</span>
+                                </button>
+
+                                {isRoleDropdownOpen && (
+                                    <div
+                                        style={{
+                                            position: 'absolute',
+                                            bottom: 'calc(100% + 10px)',
+                                            right: 0,
+                                            width: '240px',
+                                            background: t.dropdownBg,
+                                            backdropFilter: 'blur(25px)',
+                                            WebkitBackdropFilter: 'blur(25px)',
+                                            border: `1px solid ${t.sidebarBorder}`,
+                                            borderRadius: '16px',
+                                            boxShadow: '0 12px 30px rgba(0,0,0,0.3)',
+                                            padding: '8px',
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            gap: '6px',
+                                            zIndex: 10
+                                        }}
+                                    >
+                                        <div style={{ fontSize: '11px', color: t.textMuted, padding: '6px 8px', fontWeight: 'bold' }}>
+                                            تغییر نقش دستیار این گفتگو:
+                                        </div>
+                                        {ASSISTANTS.map((asst) => {
+                                            const Icon = asst.icon;
+                                            const isSelected = selectedRole === asst.id;
+                                            return (
+                                                <button
+                                                    key={asst.id}
+                                                    onClick={() => handleInChatRoleSwitch(asst.id)}
+                                                    style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: '10px',
+                                                        padding: '8px 10px',
+                                                        borderRadius: '10px',
+                                                        background: isSelected ? t.itemActiveBg : 'transparent',
+                                                        border: 'none',
+                                                        color: isSelected ? t.textPrimary : t.textSecondary,
+                                                        cursor: 'pointer',
+                                                        textAlign: 'right',
+                                                        fontSize: '12px',
+                                                        width: '100%'
+                                                    }}
+                                                >
+                                                    <Icon size={16} style={{ color: asst.accentColor }} />
+                                                    <span>{asst.title}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* ۲. کادر متن */}
+                            <textarea
+                                value={inputPrompt}
+                                onChange={(e) => setInputPrompt(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                rows={1}
+                                placeholder={`از متخصص ${currentAssistant.title} سوال بفرمایید...`}
                                 style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                    padding: '12px 14px',
+                                    flex: 1,
+                                    minWidth: 0,
+                                    background: t.inputBg,
+                                    border: `1px solid ${t.inputBorder}`,
+                                    borderRadius: '16px',
+                                    padding: '14px 18px',
+                                    color: t.inputText,
+                                    fontSize: '13px',
+                                    outline: 'none',
+                                    resize: 'none'
+                                }}
+                            />
+
+                            {/* ۳. دکمه پیوست فایل متنی */}
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept={ALLOWED_ACCEPT}
+                                onChange={handleFileSelect}
+                                style={{ display: 'none' }}
+                            />
+                            <button
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={isLoading}
+                                title="پیوست فایل متنی (.txt، .md، .log، .csv، .json)"
+                                style={{
+                                    padding: '13px',
                                     borderRadius: '16px',
                                     background: t.inputBg,
                                     border: `1px solid ${t.inputBorder}`,
-                                    color: currentAssistant.accentColor,
-                                    cursor: 'pointer',
-                                    fontSize: '12px',
-                                    fontWeight: 'bold',
-                                    whiteSpace: 'nowrap'
-                                }}
-                            >
-                                <ArrowLeftRight size={15} />
-                                <span>{currentAssistant.title.split(' ')[1]}</span>
-                            </button>
-
-                            {isRoleDropdownOpen && (
-                                <div
-                                    style={{
-                                        position: 'absolute',
-                                        bottom: 'calc(100% + 10px)',
-                                        right: 0,
-                                        width: '240px',
-                                        background: t.dropdownBg,
-                                        backdropFilter: 'blur(25px)',
-                                        border: `1px solid ${t.sidebarBorder}`,
-                                        borderRadius: '16px',
-                                        boxShadow: '0 12px 30px rgba(0,0,0,0.3)',
-                                        padding: '8px',
-                                        display: 'flex',
-                                        flexDirection: 'column',
-                                        gap: '6px',
-                                        zIndex: 10
-                                    }}
-                                >
-                                    <div style={{ fontSize: '11px', color: t.textMuted, padding: '6px 8px', fontWeight: 'bold' }}>
-                                        تغییر نقش دستیار این گفتگو:
-                                    </div>
-                                    {ASSISTANTS.map((asst) => {
-                                        const Icon = asst.icon;
-                                        const isSelected = selectedRole === asst.id;
-                                        return (
-                                            <button
-                                                key={asst.id}
-                                                onClick={() => handleInChatRoleSwitch(asst.id)}
-                                                style={{
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '10px',
-                                                    padding: '8px 10px',
-                                                    borderRadius: '10px',
-                                                    background: isSelected ? t.itemActiveBg : 'transparent',
-                                                    border: 'none',
-                                                    color: isSelected ? t.textPrimary : t.textSecondary,
-                                                    cursor: 'pointer',
-                                                    textAlign: 'right',
-                                                    fontSize: '12px',
-                                                    width: '100%'
-                                                }}
-                                            >
-                                                <Icon size={16} style={{ color: asst.accentColor }} />
-                                                <span>{asst.title}</span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* ۲. کادر متن */}
-                        <textarea
-                            value={inputPrompt}
-                            onChange={(e) => setInputPrompt(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            rows={1}
-                            placeholder={`از متخصص ${currentAssistant.title} سوال بفرمایید...`}
-                            style={{
-                                flex: 1,
-                                background: t.inputBg,
-                                border: `1px solid ${t.inputBorder}`,
-                                borderRadius: '16px',
-                                padding: '14px 18px',
-                                color: t.inputText,
-                                fontSize: '13px',
-                                outline: 'none',
-                                resize: 'none'
-                            }}
-                        />
-
-                        {/* ۳. دکمه Send یا دکمه Stop */}
-                        {isLoading ? (
-                            <button
-                                onClick={handleStopGeneration}
-                                title="توقف پاسخگویی مدل"
-                                style={{
-                                    padding: '14px 20px',
-                                    borderRadius: '16px',
-                                    background: 'linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)',
-                                    boxShadow: '0 6px 18px rgba(239, 68, 68, 0.4)',
-                                    color: '#ffffff',
-                                    border: '1px solid rgba(255, 255, 255, 0.3)',
-                                    cursor: 'pointer',
+                                    color: attachedFile ? currentAssistant.accentColor : t.textPrimary,
+                                    cursor: isLoading ? 'not-allowed' : 'pointer',
+                                    opacity: isLoading ? 0.5 : 1,
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
-                                    gap: '6px',
-                                    fontSize: '12px',
-                                    fontWeight: 'bold'
+                                    flexShrink: 0
                                 }}
                             >
-                                <Square size={16} fill="#ffffff" />
-                                <span>توقف</span>
+                                <Paperclip size={18} />
                             </button>
-                        ) : (
-                            <button
-                                onClick={handleSend}
-                                disabled={!inputPrompt.trim()}
-                                style={{
-                                    padding: '14px 20px',
-                                    borderRadius: '16px',
-                                    background: 'linear-gradient(135deg, #ff2a85 0%, #a855f7 100%)',
-                                    boxShadow: '0 6px 18px rgba(255, 42, 133, 0.35)',
-                                    color: '#ffffff',
-                                    border: '1px solid rgba(255, 255, 255, 0.25)',
-                                    cursor: !inputPrompt.trim() ? 'not-allowed' : 'pointer',
-                                    opacity: !inputPrompt.trim() ? 0.45 : 1,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center'
-                                }}
-                            >
-                                <Send size={18} />
-                            </button>
-                        )}
+
+                            {/* ۴. دکمه Send / Stop */}
+                            {isLoading ? (
+                                <button
+                                    onClick={handleStopGeneration}
+                                    title="توقف پاسخگویی مدل"
+                                    style={{
+                                        padding: '14px 20px',
+                                        borderRadius: '16px',
+                                        background: 'linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)',
+                                        boxShadow: '0 6px 18px rgba(239, 68, 68, 0.4)',
+                                        color: '#ffffff',
+                                        border: '1px solid rgba(255, 255, 255, 0.3)',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '6px',
+                                        fontSize: '12px',
+                                        fontWeight: 'bold',
+                                        flexShrink: 0
+                                    }}
+                                >
+                                    <Square size={16} fill="#ffffff" />
+                                    <span>توقف</span>
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={handleSend}
+                                    disabled={!inputPrompt.trim() && !attachedFile}
+                                    title="ارسال پیام"
+                                    style={{
+                                        padding: '14px 20px',
+                                        borderRadius: '16px',
+                                        background: 'linear-gradient(135deg, #ff2a85 0%, #a855f7 100%)',
+                                        boxShadow: '0 6px 18px rgba(255, 42, 133, 0.35)',
+                                        color: '#ffffff',
+                                        border: '1px solid rgba(255, 255, 255, 0.25)',
+                                        cursor: !inputPrompt.trim() && !attachedFile ? 'not-allowed' : 'pointer',
+                                        opacity: !inputPrompt.trim() && !attachedFile ? 0.45 : 1,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        flexShrink: 0
+                                    }}
+                                >
+                                    <Send size={18} />
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
             </main>
 
-            {/* ۳. سایدبار چپ: پنل انتخاب تخصص هوش مصنوعی (بدون هیچ نوار باقیمانده در حالت بسته) */}
+            {/* ۳. سایدبار چپ: پنل انتخاب تخصص */}
             <aside
                 style={{
                     width: isRolesOpen ? '310px' : '0px',
@@ -908,6 +1036,31 @@ export default function App() {
                             );
                         })}
                     </div>
+
+                    {/* ویژگی ۲: دکمه افزودن دستیار تخصصی شما */}
+                    <button
+                        onClick={handleAddCustomAssistant}
+                        style={{
+                            width: '100%',
+                            marginTop: '14px',
+                            padding: '12px 14px',
+                            borderRadius: '16px',
+                            background: 'linear-gradient(135deg, rgba(255, 42, 133, 0.12), rgba(168, 85, 247, 0.12))',
+                            border: `1px dashed ${t.itemActiveBorder}`,
+                            color: t.textPrimary,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '8px',
+                            fontSize: '12px',
+                            fontWeight: 'bold',
+                            transition: 'all 0.25s ease'
+                        }}
+                    >
+                        <PlusCircle size={16} style={{ color: '#ff2a85' }} />
+                        <span>افزودن دستیار تخصصی شما</span>
+                    </button>
                 </div>
 
                 <div
@@ -924,6 +1077,69 @@ export default function App() {
                     Llama 3.2 بر بستر Semantic Kernel
                 </div>
             </aside>
+
+            {/* بنر شیشه‌ای «به زودی» */}
+            {showCustomAssistantToast && (
+                <div
+                    role="status"
+                    onClick={() => setShowCustomAssistantToast(false)}
+                    style={{
+                        position: 'fixed',
+                        bottom: '110px',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        zIndex: 50,
+                        maxWidth: '480px',
+                        width: 'calc(100% - 40px)',
+                        padding: '14px 20px',
+                        borderRadius: '18px',
+                        background: t.toastBg,
+                        backdropFilter: 'blur(22px)',
+                        WebkitBackdropFilter: 'blur(22px)',
+                        border: `1px solid ${t.toastBorder}`,
+                        boxShadow: '0 16px 40px rgba(0, 0, 0, 0.35)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        cursor: 'pointer',
+                        animation: 'fadeInUp 0.3s ease'
+                    }}
+                >
+                    <div
+                        style={{
+                            padding: '8px',
+                            borderRadius: '12px',
+                            background: 'linear-gradient(135deg, #ff2a85, #a855f7)',
+                            color: '#ffffff',
+                            display: 'flex',
+                            flexShrink: 0
+                        }}
+                    >
+                        <Bot size={18} />
+                    </div>
+                    <div style={{ fontSize: '12.5px', lineHeight: '1.7', color: t.textPrimary, flex: 1 }}>
+                        به زودی: قابلیت تعریف پرامپت، نام و مستندات دستیار سفارشی در فازهای بعدی فعال خواهد شد.
+                    </div>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setShowCustomAssistantToast(false);
+                        }}
+                        title="بستن"
+                        style={{
+                            background: 'none',
+                            border: 'none',
+                            color: t.textMuted,
+                            cursor: 'pointer',
+                            padding: '4px',
+                            display: 'flex',
+                            flexShrink: 0
+                        }}
+                    >
+                        <X size={16} />
+                    </button>
+                </div>
+            )}
         </div>
     );
 }
